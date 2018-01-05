@@ -1,0 +1,379 @@
+---
+title: "Final_Team11"
+output: html_notebook
+---
+
+# Method we trid to draw random sample from the data
+## Read Line Way to cut data
+```{r}
+con <- file("ProjectTrainingData.csv","r")
+# set.seed(1001)
+
+save(file="Traindata1.csv")
+save(file="Traindata2.csv")
+
+Cnt <- 1
+while(T){
+  Line <- readLines(con,n=1)
+  if(Cnt %% 100000 == 0) {
+    cat("\rReading line",format(Cnt,scientific=F,big.mark=","))
+  }
+  if(Cnt <15000000){
+    write(Line,file="Traindata1.csv",append=TRUE)
+  }
+  else{
+    write(Line,file="Traindata2.csv",append=TRUE)
+  }
+
+  if(length(Line)==0) break
+  Cnt <- Cnt + 1
+}
+
+close(con)
+```
+
+## SQL way to draw sample
+```{r}
+library(sqldf)
+read.csv.sql("ProjectTrainingData.csv",sql = "SELECT * from file LIMIT 10")
+```
+
+# Finally we ended up using the data.table package
+## Read the Whole Data (Takes 3 minuets)
+```{r}
+library(data.table)
+Train_Data<- fread('Project_Data/ProjectTrainingData.csv',stringsAsFactors = FALSE)
+Test_Data<- fread('Project_Data/ProjectTestData.csv',stringsAsFactors = FALSE)
+```
+
+# Extract 1 milliion rows as training data and another 1 million as validation data
+```{r}
+wh<-sample(c(1:nrow(Train_Data)),1000000)
+Train_Data.1<-Train_Data[wh,]
+Train_Data<-Train_Data[-wh,]
+Train_Data.1$'hours_24'<-as.data.table(apply(Train_Data.1,1,function(x){return(substr(x[3],7,8))}))
+
+# Extract 1 milliion rows as validation data using the rest
+wh.1<-sample(c(1:nrow(Train_Data)),1000000)
+Validation_Data<-Train_Data[wh.1,]
+Validation_Data$'hours_24'<-as.data.table(apply(Validation_Data,1,function(x){return(substr(x[3],7,8))}))
+
+```
+
+# Write data into local folder to expediate the process in the future.
+```{r}
+fwrite(Validation_Data,file = 'Validation_Data.csv')
+fwrite(Train_Data.1,file = 'Train_Data.1.csv')
+# save(Validation_y,file='Validation_y.Rdata')
+# save(Train_Data_y.1,file='Train_Data_y.Rdata')
+```
+
+# Read data from the previous results of the last chunk (to get the 1 million sample) to save time
+```{r}
+#This chunck takes roughly 2 min on school computer(3.3GHZ i5)
+
+Test_Data<- fread('Project_Data/ProjectTestData.csv') ### The same as previous one
+
+Validation_Data<- fread('Project_Data/Validation_Data.csv')
+Train_Data.1<- fread('Project_Data/Train_Data.1.csv')
+fn<-function(x){
+  return(length(unique(x)))
+}
+sapply(Train_Data.1, FUN=fn)
+```
+From what we can see, in the 'id' column, we get one million unique records from our 1 milllion random sample, so we can say that this column will not have predict ability, and we decided to drop it. And the device_ip column has more than half a million unique variable, and we also decided to drop it.
+
+After we drop the first column, we should start from the third column since the original second column is our target varaible. Bedsides, we decided to make the second variable only hour, since we observed that there are only 9 days in the training data, but another 9 days in the test data. And we also think the hour would make sense since there should be certin hours that people have more time and are more likely to click the advertisement.
+
+Besides, according to our observation, site-id is highly corelated to site-domain, and app-id is highly corelated to app-domain, we decided to remove site-id and app-id
+
+# Initial Drop and Change the Hour Vairable for traindata
+```{r}
+#This chunck takes roughly 2 min on school computer(3.3GHZ i5)
+Train_Data.1$'hours_24'<-as.data.table(apply(Train_Data.1,1,function(x){return(substr(x[3],7,8))}))
+Validation_Data$'hours_24'<-as.data.table(apply(Validation_Data,1,function(x){return(substr(x[3],7,8))}))
+
+head(Train_Data.1)
+Train_Data.1[[1]]<-NULL # Delete id
+head(Train_Data.1)
+Train_Data.1[[2]]<-NULL # Delete hours(original date-hour)
+head(Train_Data.1)
+Train_Data.1[[11]]<-NULL # Delete device ip
+head(Train_Data.1)
+Train_Data.1[[4]]<-NULL # Delete site-id(Highly related to site-domain)
+head(Train_Data.1)
+Train_Data.1[[6]]<-NULL # Delete app-id(Highly related to app-domain)
+head(Train_Data.1)
+
+
+head(Validation_Data)
+Validation_Data[[1]]<-NULL
+head(Validation_Data)
+Validation_Data[[2]]<-NULL
+head(Validation_Data)
+Validation_Data[[11]]<-NULL
+head(Validation_Data)
+Validation_Data[[4]]<-NULL # Delete site-id(Highly related to site-domain)
+head(Validation_Data)
+Validation_Data[[6]]<-NULL # Delete app-id(Highly related to app-domain)
+head(Validation_Data)
+
+```
+
+# Check the Overlap within Each Category
+```{r}
+#For initial check only. Don't need to be ran everytime.
+print(names(Train_Data.1[1])[2:length(names(Train_Data.1))])
+for (i in 2:length(names(Train_Data.1))){
+  tmp <- sort(table(Train_Data.1[[i]]),decreasing=T)
+  cat("Number of Categories =",length(tmp),"\n")
+  p <-min(length(tmp),20)
+  tmp <- tmp[1:p]
+  print(tmp)
+  plot(1:length(tmp),tmp)
+  # print("---------------")
+  # scan()
+}
+```
+After the check, we decided to keep the majority 20 categories for each variable that has larger than 20 level, keep 24 for our "hour" variable, and keep the variables that have larger than 20 levels their original level number.
+
+# Create the Level Selection Function for Training and Validation Data
+```{r}
+Train_levels<-function(col1,n){
+  col_temp<-as.character(col1)
+  levels<-names(sort(table(col_temp),decreasing = TRUE)[1:n])
+  col_temp[which(!col_temp %in% levels)]='Other'
+  return(col_temp)
+}
+```
+
+# Adjust the Factor Number for Each Variable Both Within Training Data and Validation Data 
+```{r}
+#This chuck takes about 5 min on school computer.
+Train_Data_adj_1<-as.data.table(apply(Train_Data.1[,1:19],2,Train_levels,20))
+Train_Data_adj_2<-as.data.table(apply(Train_Data.1[,20],2,Train_levels,24))
+Train_Data_adj<- cbind(Train_Data_adj_1,Train_Data_adj_2)
+Train_Data_y<-Train_Data_adj[[1]]
+Train_Data.1 <- Train_Data_adj[,2:20]
+
+Val_Data_adj_1<-as.data.table(apply(Validation_Data[,1:19],2,Train_levels,20))
+Val_Data_adj_2<-as.data.table(apply(Validation_Data[,20],2,Train_levels,24))
+Val_Data_adj<- cbind(Train_Data_adj_1,Train_Data_adj_2)
+Val_Data_y<-Val_Data_adj[[1]]
+Validation_Data.1 <- Val_Data_adj[,2:20]
+
+### Remove redundent data to save memory.
+rm(Train_Data_adj_1,Train_Data_adj_2,Train_Data_adj)
+rm(Val_Data_adj_1,Val_Data_adj_2,Val_Data_adj)
+rm(Validation_Data)
+#After the removal, there should be only 3 datatables and two vecors in memory as of now.
+
+### Adjust the test data to make sure it has the same columns as Train and Test
+Test_Data.1 <- Test_Data
+head(Train_Data.1)
+head(Test_Data.1)
+Test_Data.1$'hours_24'<-apply(Test_Data.1,1,function(x){return(substr(x[2],7,8))}) 
+head(Test_Data.1)
+Test_Data.1[[1]]<-NULL # Delete id
+head(Test_Data.1)
+Test_Data.1[[1]]<-NULL #Delete hours(original dte-hour)
+head(Test_Data.1)
+Test_Data.1[[10]]<-NULL #Delete device_ip
+Test_Data.1[[3]]<-NULL #Delete site-id
+head(Test_Data.1)
+Test_Data.1[[5]]<-NULL #Delete app-id 
+head(Test_Data.1)
+rm(Test_Data)
+```
+
+# Match the traindata level with the test data
+```{r}
+# Around  4-5 min on school computer to run this chuck
+
+#Remove leading and trailing white space in characters
+Validation_Data.1<-as.data.table(apply(Validation_Data.1,2,trimws,'both')) 
+Train_Data.1<-as.data.table(apply(Train_Data.1,2,trimws,'both'))
+Test_Data.1<-as.data.table(apply(Test_Data.1,2,trimws,'both'))
+
+### For each factor, create the level lists of training data
+factor_list<-list()
+
+for(i in 1:ncol(Train_Data.1)){
+  factor_list[[i]]=unique(Train_Data.1[[i]])
+}
+
+
+#Match levels in all three datasets. All non-major levels will be marked as 'Others'
+for(i in 1:ncol(Test_Data.1)){
+  
+  print(i)
+  index<-which(!as.character(Test_Data.1[[i]]) %in% trimws( as.character(factor_list[[i]]),'both'))
+  Test_Data.1[[i]][index]<-'Other'
+}
+
+for(i in 1:ncol(Validation_Data.1)){
+  print(i)
+  index<-which(!as.character(Validation_Data.1[[i]]) %in% trimws(as.character(factor_list[[i]]),'both'))
+  Validation_Data.1[[i]][index]<-'Other'
+}
+
+```
+
+# Save the current  result before building models
+```{r}
+fwrite(Validation_Data.1,file = 'Validation_Data_Coded.csv')
+fwrite(Train_Data.1, file = 'Train_Data.1_Coded.csv')
+fwrite(Test_Data.1, file = 'Test_Data.1_Coded.csv')
+save(Train_Data_y,file = 'Train_Data_y_final.Rdata')
+save(Val_Data_y,file = 'Val_Data_y_final.Rdata')
+```
+
+# Read the data saved above
+```{r}
+library(data.table)
+Validation_Data.1<- fread('Project_Data/Validation_Data_Coded.csv')
+Train_Data.1<- fread('Project_Data/Train_Data.1_Coded.csv')
+Test_Data.1<- fread('Project_Data/Test_Data.1_Coded.csv')
+load('Project_Data/Train_Data_y_final.Rdata')
+load('Project_Data/Val_Data_y_final.Rdata')
+```
+
+# Log-Loss Function
+```{r}
+Log_Loss=function(Y, Y_hat)
+{
+  min_num<-min(Y_hat[Y_hat!=0])/3
+  Y_hat[Y_hat==0]=min_num
+  Y_hat[Y_hat==1]=1-min_num
+  result <- Y*log(Y_hat)+(1-Y)*log(1-Y_hat)
+  result <- -(length(Y)^-1)*sum(result)
+  return(result)
+}
+```
+
+# Model Building
+## Naive Bayes
+```{r}
+if (!require('naivebayes')) {install.packages('naivebayes'); require('naivebayes')}
+
+nb_complete<-naive_bayes(x=Train_Data.1,y=as.factor(Train_Data_y))
+nb_predict<-predict(nb_complete,newdata = Validation_Data.1,type = 'prob')
+
+Log_Loss(nb_predict[,2],as.numeric(Val_Data_y))
+```
+As we see, the log loss is larger than 0.6, and this our worst model.
+
+## Lasso Regression
+```{r}
+if (!require('glmnet')) {install.packages('glmnet'); require('glmnet')}
+grid.1<-10^seq(3,-2,length = 100)
+Train_With_response<-model.matrix(Train_Data_y~.,Train_With_response)
+Val_With_response<-model.matrix(Val_Data_y~.,cbind(Train_Data.1,Val_Data_y))
+glm_ridge<-glmnet(Train_With_response,as.factor(Train_Data_y),alpha=0,lambda=grid.1,thresh=1e-12,family = 'binomial')
+glm_lasso<-glmnet(Train_With_response,as.factor(Train_Data_y),alpha=1,lambda=grid.1,thresh=1e-12,family = 'binomial')
+lasso_predict<-predict(glm_lasso,newx =Val_With_response,type ='response')
+lasso_performance<-numeric(100);
+for(i in 1:ncol(lasso_predict)){
+  lasso_performance[i]=Log_Loss(as.numeric(Val_Data_y),lasso_predict[,i])
+}
+plot(grid.1,lasso_performance)
+```
+As the grid plot shows, the best perfoems we receive from Lasso Regression is around 0.43.
+
+## Adaboost
+```{r}
+if (!require('fastAdaboost')) {install.packages('fastAdaboost'); require('fastAdaboost')}
+Train_With_response<-data.table(cbind(Train_Data.1,Train_Data_y))
+Train_With_response$Train_Data_y<-as.factor(Train_With_response$Train_Data_y) ### Combine the target variable with other variables to put into the model
+adboost_complete <- adaboost(Train_Data_y~., data = Train_With_response, 3)
+
+# save(adboost_complete,file='adboost_3cl_model.Rdata') 
+### this is a 234 MB model, so we decided to save it.
+
+####################################### To use the saveed model to make prediction on validation set:
+load('Project_Data/adboost_3cl_model.Rdata')
+n <- 1000000
+nr <- nrow(Val_With_respons)
+Test_24h<-as.character(Validation_Data.1[[19]])
+
+fix_index<-which(as.numeric(Test_24h)<10)
+Test_24h[fix_index]<-paste0('0',Test_24h[fix_index])
+Test_24h<-as.factor(Test_24h)
+Validation_Data.1[[19]]<-Test_24h
+
+for(i in 1:ncol(Validation_Data.1)){
+  Validation_Data.1[[i]]<-as.factor(Validation_Data.1[[i]])
+}
+
+# Prediction Validation Data
+ad_predict<-predict(adboost_complete,newdata = Validation_Data.1,'prob')
+Log_Loss(as.numeric(Val_Data_y),ad_predict$prob[,2])
+
+# This gives us 0.379887
+```
+We tried to use random forest, but the result is worse than the prsvious logistic regression (lasso and ridge model), so we decided to use another ensemble method: boosting. It is illustrated in our previous reading material. But it is a relatively new method, and it normally performs better than ramdom forest, so we decided try it.
+
+As shown, this model takes probably 30 minutes to build, and the log-loss on our validation data is 0.379887, so this is our best model. Furthermore, since we have only limitted time, we didn't try to ensemble more than 3 classifer in our adaboost. But we assume when we ensemble, for example, 5 classifers, we would receive even better performance. Finally, we deicede to use our current adaboost model to make the prediction in the test datat.
+
+# Prediction on TestSet
+```{r}
+#Load the model and files  we saved(If we need to)
+load('adboost_3cl_model.Rdata') 
+Test_Data.1<- fread('Test_Data.1_Coded.csv', stringsAsFactors = TRUE)
+
+#Last comlumn's data type was messed up when we reloaded the test data, for example '00' became 0 as a number. We need to fix everything before we could proceed.
+Test_24h<-as.character(Test_Data.1[[19]])
+
+fix_index<-which(as.numeric(Test_24h)<10)
+Test_24h[fix_index]<-paste0('0',Test_24h[fix_index])
+Test_24h<-as.factor(Test_24h)
+Test_Data.1[[19]]<-Test_24h
+for(i in 1:ncol(Test_Data.1)){
+  Test_Data.1[[i]]<-as.factor(Test_Data.1[[i]])
+}
+
+
+
+#Split test data into chuncks and store everything in a list. Easier to recover if anything goes wrong.
+n <- 1000000
+nr <- nrow(Test_Data.1)
+test_spl<-rep(1:ceiling(nr/n), each=n, length.out=nr)
+test_chunks<-split(Test_Data.1, test_spl)
+
+#Create a list to store prediction results as we go though test data chuncks.
+test_pred<-list()
+for(i in 1:14){
+  print(i) #keep track of progress
+  #Device_type occasionally has 1 'other'. Change them to the level with highest occurance.
+  if(sum(test_chunks[[i]]$device_type=='Other')>0){
+    ind<-which(test_chunks[[i]]$device_type=='Other')
+    test_chunks[[i]]$device_type[ind]='0'
+  }
+  test_pred[[i]]<-predict(adboost_complete,newdata =test_chunks[[i]] ,'prob')
+  temp<-test_pred[[i]]$prob
+  #Store predictions locally for easy fault-recovery.
+  file=paste0(paste0('pred_',as.character(i)),'.csv')
+  save_csv<-write.csv(temp,file=file)
+}
+```
+
+```{r}
+#Bring predictions together.
+final_result<-data.table('X'=numeric(0),'V1'=numeric(0),'V2'=numeric(0))
+
+for(i in 1:14){
+  print(i)
+  file=paste0(paste0('pred_',as.character(i)),'.csv')
+  temp<-read.csv(file)
+  final_result<-rbind(final_result,temp)
+}
+
+#Replace 0.5s with our own prediction.
+submission<-fread('Project_Data/ProjectSubmission-Team11.csv')
+submission[[2]]=as.numeric(final_result$V2)
+submission$`P(click)`[1:100]
+fwrite(submission,file= 'submission_team11.csv')
+rm(submission)
+
+#check_submission<-fread('submission_team11.csv')
+```
